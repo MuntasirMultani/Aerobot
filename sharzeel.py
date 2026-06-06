@@ -75,15 +75,17 @@ MAX_TOKENS       = 350
 CHAT_TEMPERATURE = 0.7
 
 ENERGY_THRESHOLD     = 0.010
-SILENCE_AFTER_SPEECH = 1.5
+SILENCE_AFTER_SPEECH = 0.8
 PRE_ROLL_CHUNKS      = 6
 MIN_SPEECH_SECS      = 0.5
 CHUNK_SECS           = 0.1
 
 IDLE_TIMEOUT         = 10.0
-IDLE_POLL_TIMEOUT    = 30.0
+IDLE_POLL_TIMEOUT    = 60.0
 
 GREEN_LED_PIN = 18
+STT_MODEL       = "whisper-large-v3"        # used for real conversation (accurate)
+STT_MODEL_FAST  = "whisper-large-v3-turbo"  # used only for wake word (3x faster)
 
 WAKE_WORDS = ["hello", "hey", "hello acrobot", "hey acrobot", "acrobot", "airport"]
 
@@ -266,6 +268,14 @@ def capture_speech(timeout: float) -> Optional[np.ndarray]:
 # ─────────────────────────────────────────────────────────────────
 
 def transcribe(audio: np.ndarray) -> Tuple[str, str]:
+    """Full quality transcription — used during conversation."""
+    return _transcribe_with_model(audio, STT_MODEL)
+
+def transcribe_fast(audio: np.ndarray) -> Tuple[str, str]:
+    """Faster transcription — used only for wake word detection."""
+    return _transcribe_with_model(audio, STT_MODEL_FAST)
+
+def _transcribe_with_model(audio: np.ndarray, model: str) -> Tuple[str, str]:
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         tmp_path = tmp.name
     sf.write(tmp_path, audio, SAMPLE_RATE)
@@ -273,7 +283,7 @@ def transcribe(audio: np.ndarray) -> Tuple[str, str]:
     try:
         with open(tmp_path, "rb") as f:
             result = client.audio.transcriptions.create(
-                model=STT_MODEL, file=f, response_format="verbose_json",
+                model=model, file=f, response_format="verbose_json",
             )
     finally:
         os.unlink(tmp_path)
@@ -501,8 +511,8 @@ def chatbot_loop():
     lang  = "hi"
 
     greeting = (
-        "hello! mein AirBot hoon — Indore Airport ka AI assistant. "
-        "Aap koi bhi sawaal poochhiye — main madad karne ke liye hazir hoon."
+        "Namaste! mein AirBot hoon — Indore Airport ka AI assistant. "
+        "Aap apna sawaal poochhiye."
     )
     speak(greeting, "hi")
 
@@ -513,14 +523,14 @@ def chatbot_loop():
             audio = capture_speech(timeout=IDLE_POLL_TIMEOUT)
             if audio is None:
                 continue
-            wake_text, _ = transcribe(audio)
+            wake_text, _ = transcribe_fast(audio)          # ← faster model for wake word
             log.info("Heard (idle): %r", wake_text)
             if is_wake_word(wake_text):
                 state = State.LISTENING
                 wakeup = (
-                    "Haan, main sun raha hoon. Aap apna sawaal poochhiye."
+                    "Haan, boliye."                        # ← short = less TTS delay
                     if lang == "hi" else
-                    "Hello! I'm listening. How may I help you today?"
+                    "Yes, how can I help?"
                 )
                 speak(wakeup, lang)
             continue
@@ -531,15 +541,15 @@ def chatbot_loop():
             if audio is None:
                 state = State.IDLE
                 idle_msg = (
-                    "Mein abhi idle mode mein ja raha hoon. Zaroorat ho toh Hello kahiye."
+                    "Idle mode mein ja raha hoon. Hello kahiye jab zaroorat ho."
                     if lang == "hi" else
-                    "Going idle. Say Hello whenever you need assistance."
+                    "Going idle. Say Hello when you need help."
                 )
                 speak(idle_msg, lang)
                 continue
 
             log.info("Transcribing...")
-            user_text, lang = transcribe(audio)
+            user_text, lang = transcribe(audio)            # ← full quality for conversation
             if not user_text:
                 log.warning("Empty transcript — re-listening")
                 continue
@@ -555,7 +565,6 @@ def chatbot_loop():
             speak(reply, lang)
             state = State.LISTENING
             continue
-
 # ─────────────────────────────────────────────────────────────────
 #  ENTRY POINT
 # ─────────────────────────────────────────────────────────────────
