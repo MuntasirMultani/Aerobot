@@ -109,6 +109,17 @@ except ImportError:
     GPIO_AVAILABLE = False
     log.info("RPi.GPIO not found — running without GPIO (dev mode).")
 
+# pyttsx3 is the offline TTS engine (uses espeak on Linux).
+# Only used when internet is unavailable so edge-tts cannot be reached.
+try:
+    import pyttsx3 as _pyttsx3
+    HAS_PYTTSX3 = True
+    log.info("pyttsx3 available — offline TTS enabled.")
+except ImportError:
+    HAS_PYTTSX3 = False
+    log.warning("pyttsx3 not found — offline TTS announcements will be silent. "
+                "Install with: pip install pyttsx3")
+
 # Best-effort import of Groq's own exception types so error
 # classification can match on type instead of guessing from text.
 # Falls back gracefully if the installed groq version lacks any of
@@ -517,12 +528,21 @@ def announce_error(exc: Exception) -> None:
     deliberately uses the recursion-safe `_speak_direct()` path rather
     than `speak()` (since `speak()` itself calls this function on
     failure).
+
+    Special case — 'no_internet':
+      edge-tts also requires an internet connection, so _speak_direct()
+      would fail silently when offline. Instead we route through
+      _speak_offline() which uses pyttsx3/espeak and works without any
+      network access.
     """
     try:
         kind = classify_error(exc)
         msg = ERROR_MESSAGES[kind]
         log.info("Announcing error (%s): %s", kind, msg)
-        _speak_direct(msg, TTS_VOICE_EN)
+        if kind == "no_internet":
+            _speak_offline(msg)          # offline-safe path (pyttsx3/espeak)
+        else:
+            _speak_direct(msg, TTS_VOICE_EN)
     except Exception as report_exc:
         log.error("Failed to announce error: %s", report_exc)
 
@@ -877,6 +897,30 @@ def _speak_direct(text: str, voice: str) -> None:
         if tmp_path and os.path.exists(tmp_path):
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
+
+def _speak_offline(text: str) -> None:
+    """
+    Speak `text` using pyttsx3 (espeak backend) — works with NO internet.
+    Used exclusively by announce_error() when the error kind is
+    'no_internet', because edge-tts also requires an internet connection
+    and would fail silently in that situation.
+
+    pyttsx3 is NOT thread-safe; a fresh engine instance is created and
+    immediately destroyed on every call to avoid cross-thread state issues.
+    """
+    if not HAS_PYTTSX3:
+        log.warning("_speak_offline() called but pyttsx3 is not installed — silent.")
+        return
+    try:
+        engine = _pyttsx3.init()
+        # Match approximate rate of edge-tts output (default 200 wpm → 150 is clearer)
+        engine.setProperty("rate", 150)
+        engine.say(text)
+        engine.runAndWait()
+        engine.stop()
+        log.info("Offline TTS spoke: %s", text[:80])
+    except Exception as exc:
+        log.error("Offline TTS (_speak_offline) failed: %s", exc)
 
 # ─────────────────────────────────────────────────────────────────
 #  FULL-SCREEN IMAGE DISPLAY
